@@ -26,8 +26,8 @@ class Data(Dataset):
         self.image_path = os.path.join(self.path, 'real_image')
         self.images = [file for file in os.listdir(self.image_path) if file.endswith('.png')]
         if self.mode=='train':
-            self.sketch_image_path = os.path.join(self.path, 'sketch_pro2')
-            self.sketch_images = [file for file in os.listdir(self.sketch_image_path) if file.endswith('.jpg')]
+            self.sketch_image_path = os.path.join(self.path, 'sketch_pro')
+        #     self.sketch_images = [file for file in os.listdir(self.sketch_image_path) if file.endswith('.png')]
 
     def __len__(self):
         return len(self.images)
@@ -39,26 +39,25 @@ class Data(Dataset):
 
         name = strip_path_extension(image_name)+'.pt'
         if self.mode=='train':
-            sketch_name = image_name[:-4] + '_sketch' + '.jpg'
+            sketch_name = image_name[:-4] + '.PNG'
             sketch_image = Image.open(os.path.join(self.sketch_image_path, sketch_name))
             if not os.path.exists(os.path.join(self.image_path,name)):
                 latent = e4e_projection(image, os.path.join(self.image_path, name), self.device)
             else:
                 latent = torch.load(os.path.join(self.image_path,name))['latent']
-            return latent, self.transform(image), self.transform(sketch_image)
+            return latent, self.transform(image), self.transform(sketch_image)[0:3]
 
         else:
             latent = e4e_projection(image, os.path.join(self.image_path,name), self.device)
             return latent, self.transform(image)
 
 
+
 class TenShot():
     def __init__(self):
         self.latent_dim=512
         self.device = 'cuda'
-        self.train_dataset = Data('data/train',mode='train')
         self.test_dataset = Data('data/test',mode='test')
-        self.trainloader = DataLoader(self.train_dataset, batch_size=4, shuffle=True)
         self.testloader = DataLoader(self.test_dataset, batch_size=1, shuffle=False)
         self.iters = 10
 
@@ -68,17 +67,23 @@ class TenShot():
         self.log_interval = 100
 
     def train(self):
+        self.train_dataset = Data('data/train_chae_trace2',mode='train')
+        self.trainloader = DataLoader(self.train_dataset, batch_size=4, shuffle=True)
         # load Generator
         ori_generator = Generator(1024, self.latent_dim, 8, 2).to(self.device)
         ckpt = torch.load('models/stylegan2-ffhq-config-f.pt', map_location=lambda storage, loc:storage)
-        ori_generator.load_state_dict(ckpt['g_ema'], strict=False)
+        # ori_generator.load_state_dict(ckpt['g_ema'], strict=False)
         mean_latent = ori_generator.mean_latent(10000)
 
         generator = deepcopy(ori_generator)
+        # ckpt_g = torch.load('checkpoint/ckpt_chae.pt', map_location=lambda storage, loc: storage)
+        # generator.load_state_dict(ckpt_g['model'])
+        ckpt_g = torch.load('checkpoint/ckpt_chae_trace.pt', map_location=lambda storage, loc: storage)
+        generator.load_state_dict(ckpt_g['model'])
         discriminator = Discriminator(1024,2).eval().to(self.device)
         discriminator.load_state_dict(ckpt['d'], strict=False)
 
-        g_optim = optim.Adam(generator.parameters(), lr=2e-4, betas=(0,0.99))
+        g_optim = optim.Adam(generator.parameters(), lr=2e-3, betas=(0,0.99))
 
         if self.preserve_color:
             id_swap = [9,11,15,16,17]
@@ -116,26 +121,31 @@ class TenShot():
         torch.save({
             'model': generator.state_dict(),
             'optimizer': g_optim.state_dict()
-        }, 'checkpoint/ckpt_3.pt')
+        }, 'checkpoint/ckpt_chae_trace2.pt')
 
 
 
     def eval(self):
         generator = Generator(1024, self.latent_dim, 8, 2).to(self.device)
-        ckpt = torch.load('checkpoint/ckpt_2.pt', map_location=lambda storage, loc: storage)
+        ckpt = torch.load('checkpoint/ckpt_chae_trace2.pt', map_location=lambda storage, loc: storage)
         generator.load_state_dict(ckpt['model'])
-
+        os.makedirs('./results/ckpt_chae_trace2', exist_ok=True)
+        os.makedirs('./results/ckpt_chae_trace2/sketch', exist_ok=True)
+        os.makedirs('./results/ckpt_chae_trace2/img', exist_ok=True)
         for i, data_i in enumerate(self.testloader):
             latent = data_i[0]
             img = data_i[1].to(self.device)
             with torch.no_grad():
                 output = generator(latent, input_is_latent=True)
-            file_name = f"./results/test_img3/{i}.png"
-            torchvision.utils.save_image(torchvision.utils.make_grid([img.squeeze(0), output.squeeze(0)], nrow=2), file_name)
-
+            sketch_name = f"./results/ckpt_chae_trace2/sketch/{i}.png"
+            img_name = f"./results/ckpt_chae_trace2/img/{i}.png"
+            total_name = f"./results/ckpt_chae_trace2/{i}.png"
+            torchvision.utils.save_image(torchvision.utils.make_grid([img.squeeze(0), output.squeeze(0)], nrow=2), total_name)
+            torchvision.utils.save_image(output, sketch_name)
+            torchvision.utils.save_image(torchvision.utils.make_grid(img.squeeze(0)), img_name)
 
 if __name__=='__main__':
     tenshot = TenShot()
-    tenshot.train()
-    # tenshot.eval()
+    # tenshot.train()
+    tenshot.eval()
 
